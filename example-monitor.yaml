@@ -1,0 +1,23 @@
+# QuickBorgmatic monitoring-only config - one file per remote machine.
+#
+# Copy this file to <machine>.yaml (the .disabled suffix keeps this template
+# ignored), fill in the repository and its passphrase, then chmod 600 it.
+# The panel picks it up on its next check (or right-click the bar icon).
+#
+# These files are read ONLY by the QuickBorgmatic panel (borgmatic is invoked
+# with this directory as an extra config). The nightly borgmatic timer never
+# sees them, so no backup is ever created into these repositories from here.
+#
+# Requirements: this machine's SSH key must be authorized on the repo host,
+# and the passphrase must match that repository's encryption.
+
+repositories:
+    - path: ssh://user@backup-host:22/home/user/backup-machine-name
+      label: machine-name
+
+encryption_passphrase: "the-repository-passphrase"
+
+# Required when the remote machine names its archives differently from
+# this machine (borgmatic filters archive listings on "{hostname}-*" by
+# default, which would show 0 archives):
+match_archives: "sh:machine-name-*"
