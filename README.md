@@ -4,6 +4,8 @@ An [Omarchy shell](https://omarchy.org) bar-widget plugin (Quickshell) that
 monitors the freshness of [borgmatic](https://torsion.org/borgmatic/) backups
 on a remote server.
 
+![QuickBorgmatic panel showing per-repository backup freshness](screenshot.png)
+
 - **Bar icon** (󰁯) that turns urgent the moment the newest backup in any
   repository is older than the stale threshold (default 48 h).
 - **Popup panel** listing every configured repository with its last backup
