@@ -4,7 +4,7 @@ An [Omarchy shell](https://omarchy.org) bar-widget plugin (Quickshell) that
 monitors the freshness of [borgmatic](https://torsion.org/borgmatic/) backups
 on a remote server.
 
-![QuickBorgmatic panel showing per-repository backup freshness](screenshot.png)
+![QuickBorgmatic panel showing per-repository backup freshness](preview.png)
 
 - **Bar icon** (󰁯) that turns urgent the moment the newest backup in any
   repository is older than the stale threshold (default 48 h).
@@ -22,20 +22,54 @@ instantly after a shell restart, and re-derives staleness from the cached
 timestamps every minute. The plugin never reads the borgmatic config file;
 its only interface is the borgmatic subprocess.
 
+## Requirements
+
+- Omarchy shell (Quattro) with plugin support.
+- [borgmatic](https://torsion.org/borgmatic/) installed and configured on this
+  machine, so that `borgmatic repo-list --json` works from a terminal.
+- SSH access to the repository host if the repositories are remote.
+
+The plugin bundles no binaries and downloads nothing; it only runs the
+`borgmatic` executable already installed on the system.
+
 ## Install
 
+From the Omarchy plugin marketplace, or directly from git:
+
 ```sh
-ln -s /path/to/QuickBorgmatic ~/.config/omarchy/plugins/fr.rvier.quickborgmatic
+omarchy plugin add https://github.com/brvier/QuickBorgmatic --enable
 ```
 
-Then add the widget to the bar layout in `~/.config/omarchy/shell.json`,
-e.g. in `bar.layout.right`:
+`--enable` adds the widget to the bar for you. To place it yourself instead,
+add an entry to the bar layout in `~/.config/omarchy/shell.json`, e.g. in
+`bar.layout.right`:
 
 ```json
 { "id": "fr.rvier.quickborgmatic" }
 ```
 
 and restart the shell: `omarchy-restart-shell`.
+
+For development, symlink the checkout instead:
+
+```sh
+ln -s /path/to/QuickBorgmatic ~/.config/omarchy/plugins/fr.rvier.quickborgmatic
+```
+
+## Uninstall
+
+```sh
+omarchy plugin remove fr.rvier.quickborgmatic
+```
+
+This removes the plugin and its bar layout entry. The plugin writes only two
+things outside its own folder, which you can delete by hand if you no longer
+want them:
+
+- its status cache, `~/.local/state/quickborgmatic/`;
+- your optional monitoring configs, `~/.config/quickborgmatic/`.
+
+It never modifies borgmatic's own configuration or any other user file.
 
 ## Settings
 
