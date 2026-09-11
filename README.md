@@ -25,11 +25,18 @@ instantly after a shell restart, and re-derives staleness from the cached
 timestamps every minute. The plugin never reads the borgmatic config file;
 its only interface is the borgmatic subprocess.
 
-That subprocess is bounded: it runs under `timeout` (5 min, then the whole
-borgmatic/borg/ssh process group is killed) and both its output streams are
-capped before they reach the shell (8 MiB stdout, 64 KiB stderr). A stalled
-SSH peer shows up as "check timed out" and an oversized listing as "output
-exceeded", in both cases keeping the last good data on screen.
+That subprocess is bounded and runs with nothing taken from your shell
+environment: every helper is called by absolute `/usr/bin` path with
+`PATH=/usr/bin:/bin` pinned for the whole tree (borg and ssh included) and
+`BASH_ENV`, `LD_PRELOAD` and `PYTHON*` dropped, so a stray executable on your
+PATH can never be picked up by the unattended check. borgmatic itself must be
+a regular executable owned by root or you and not writable by others, or the
+check refuses to run. The tree runs under `timeout` in its own process group
+(5 min, then the whole borgmatic/borg/ssh group is killed) and both output
+streams are capped before they reach the shell (8 MiB stdout, 64 KiB stderr);
+whatever is still alive in the group when the wrapper exits is terminated. A
+stalled SSH peer shows up as "check timed out" and an oversized listing as
+"output exceeded", in both cases keeping the last good data on screen.
 
 ## Requirements
 
@@ -39,7 +46,8 @@ exceeded", in both cases keeping the last good data on screen.
 - SSH access to the repository host if the repositories are remote.
 
 The plugin bundles no binaries and downloads nothing; it only runs the
-`borgmatic` executable already installed on the system.
+`borgmatic` executable already installed on the system, by absolute path
+(`/usr/bin/borgmatic` by default, see `borgmaticPath` below).
 
 ## Install
 
@@ -88,6 +96,7 @@ Inline on the layout entry (or through the bar's widget settings UI):
 |----------------|---------|---------------------------------------------|
 | `staleHours`   | 48      | Warn when the newest backup is older than this |
 | `refreshHours` | 6       | How often to query the remote server        |
+| `borgmaticPath` | `/usr/bin/borgmatic` | Absolute path to the borgmatic executable (e.g. `~/.local/bin/borgmatic` for a pipx install, written out in full) |
 
 ## Monitoring other machines' backups
 

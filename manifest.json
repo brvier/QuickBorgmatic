@@ -6,7 +6,9 @@
   "author": "Benoît HERVIER",
   "license": "MIT",
   "description": "Borgmatic backup freshness monitor: bar icon that warns when the newest backup is older than a threshold, with a per-repository popup",
-  "kinds": ["bar-widget"],
+  "kinds": [
+    "bar-widget"
+  ],
   "entryPoints": {
     "barWidget": "BarWidget.qml"
   },
@@ -14,12 +16,17 @@
     "displayName": "Borgmatic",
     "description": "Backup freshness for every borgmatic repository",
     "category": "System",
-    "aliases": ["borgmatic", "backups", "borg"],
+    "aliases": [
+      "borgmatic",
+      "backups",
+      "borg"
+    ],
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
       "staleHours": 48,
-      "refreshHours": 6
+      "refreshHours": 6,
+      "borgmaticPath": "/usr/bin/borgmatic"
     },
     "schema": [
       {
@@ -39,6 +46,13 @@
         "max": 48,
         "step": 1,
         "defaultValue": 6
+      },
+      {
+        "key": "borgmaticPath",
+        "type": "string",
+        "label": "borgmatic executable",
+        "defaultValue": "/usr/bin/borgmatic",
+        "description": "Absolute path to the borgmatic executable. It must be a regular executable owned by root or you and not writable by others, otherwise the check refuses to run."
       }
     ]
   }

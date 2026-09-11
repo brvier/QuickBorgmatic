@@ -43,6 +43,13 @@ Item {
   readonly property int stdoutCapBytes: 8 * 1024 * 1024
   readonly property int stderrCapBytes: 64 * 1024
 
+  // The check runs every few hours unattended, so nothing it executes may
+  // come from the ambient PATH: every helper is an absolute /usr/bin path
+  // and borgmatic is this absolute path, verified by the wrapper (regular
+  // executable, not writable by others, owned by root or the user) before
+  // it runs. pipx users point this at ~/.local/bin/borgmatic.
+  readonly property string borgmaticPath: String(setting("borgmaticPath", "/usr/bin/borgmatic"))
+
   readonly property string home: Quickshell.env("HOME") || ""
   readonly property string stateDir: (Quickshell.env("XDG_STATE_HOME") || home + "/.local/state") + "/quickborgmatic"
   readonly property string cachePath: stateDir + "/status.json"
@@ -126,54 +133,131 @@ Item {
   Process {
     id: proc
     running: false
-    // Passing any -c disables borgmatic's default config search, so the
-    // defaults that exist are re-listed explicitly before monitor.d is
-    // appended. An empty monitor.d is fine (verified: borgmatic accepts an
-    // empty config directory).
-    //
-    // $2 deadline (s), $3 stdout cap (bytes), $4 stderr cap (bytes).
-    // `timeout` puts borgmatic and its borg/ssh children in one process
-    // group and TERMs then KILLs the whole group at the deadline (exit 124).
-    // Both streams pass through `head -c` so this process never receives
-    // more than the caps: stderr is cut and the rest drained, stdout probes
-    // one extra byte to tell "hit the cap" from "exactly the cap" and exits
-    // 222 on overflow, which closes the pipe and stops the producer.
-    command: ["bash", "-c", [
-      'cfgs=()',
-      'for p in /etc/borgmatic/config.yaml /etc/borgmatic.d "${XDG_CONFIG_HOME:-$HOME/.config}/borgmatic/config.yaml" "${XDG_CONFIG_HOME:-$HOME/.config}/borgmatic.d" "$1"; do',
-      '  [ -e "$p" ] && cfgs+=(-c "$p")',
-      'done',
-      '{ timeout -k 10 "$2" borgmatic "${cfgs[@]}" repo-list --json 2>&1 >&3 \\',
-      '    | { head -c "$4" >&2; cat >/dev/null; }',
-      '  exit "${PIPESTATUS[0]}"',
-      '} 3>&1 | { head -c "$3"; [ "$(head -c 1 | wc -c)" -eq 0 ] || exit 222; }',
-      'rcs=("${PIPESTATUS[@]}")',
-      '[ "${rcs[1]}" -eq 222 ] && exit 222',
-      'exit "${rcs[0]}"'
-    ].join("\n"), "--", root.monitorDir, String(root.checkTimeoutSec),
-        String(root.stdoutCapBytes), String(root.stderrCapBytes)]
+    // Launch chain, every binary by absolute path:
+    //   env      drops the variables a shadow could ride in on (BASH_ENV,
+    //            LD_PRELOAD, PYTHON*...) and pins PATH=/usr/bin:/bin for
+    //            the whole tree, borg and ssh included.
+    //   timeout  puts itself and every descendant in a new process group,
+    //            TERMs then KILLs that whole group at the deadline (124/137).
+    //   bash     --noprofile --norc runs the wrapper below, which verifies
+    //            the borgmatic executable (223 if untrusted), caps both
+    //            streams (222 on overflow) and kills whatever is left in
+    //            the group before it exits.
+    command: [
+      "/usr/bin/env", "-u", "BASH_ENV", "-u", "ENV", "-u", "LD_PRELOAD", "-u", "LD_LIBRARY_PATH",
+      "-u", "PYTHONPATH", "-u", "PYTHONHOME", "-u", "PYTHONSTARTUP", "PATH=/usr/bin:/bin",
+      "/usr/bin/timeout", "-k", "10", String(root.checkTimeoutSec),
+      "/usr/bin/bash", "--noprofile", "--norc", "-c", root.wrapperScript, "--",
+      root.monitorDir, String(root.checkTimeoutSec), String(root.stdoutCapBytes),
+      String(root.stderrCapBytes), root.borgmaticPath
+    ]
 
     // waitForEnd holds the exited signal until both streams have drained,
     // so the collectors' text is complete inside onExited.
     stdout: StdioCollector { id: outCollector; waitForEnd: true }
     stderr: StdioCollector { id: errCollector; waitForEnd: true }
 
+    // timeout's pid is the id of the process group holding the whole tree;
+    // remembered so the backstop can kill the group, not just one process.
+    onRunningChanged: if (running) root.checkGroupId = proc.processId
+
     onExited: function(exitCode) {
       root.applyResult(exitCode, outCollector.text, errCollector.text)
     }
   }
 
+  property int checkGroupId: 0
+
   // Last-resort reaper in case `timeout` itself never returns: SIGKILL the
-  // wrapper well after its own deadline. Normally never fires.
+  // entire process group well after its own deadline. Normally never fires.
   Timer {
     interval: (root.checkTimeoutSec + 30) * 1000
     running: proc.running
     repeat: false
     onTriggered: {
-      console.warn("quickborgmatic: check exceeded its deadline, killing it")
+      console.warn("quickborgmatic: check exceeded its deadline, killing process group", root.checkGroupId)
+      if (root.checkGroupId > 0) {
+        groupKiller.command = ["/usr/bin/kill", "-KILL", "--", "-" + String(root.checkGroupId)]
+        groupKiller.running = true
+      }
       proc.signal(9)
     }
   }
+
+  Process { id: groupKiller; running: false }
+
+  // --- wrapper script begin (generated verbatim from the tested shell file;
+  // arguments: monitor.d dir, deadline s, stdout cap, stderr cap, borgmatic path)
+  readonly property string wrapperScript: [
+      "# Positional inputs are copied first: `set --` below reuses the positionals.",
+      "MON=$1; OUTCAP=$3; ERRCAP=$4; BM=$5",
+      "set -u",
+      "PATH=/usr/bin:/bin",
+      "export PATH",
+      "",
+      "# The whole tree runs in the process group `timeout` created around us",
+      "# (its pid == our $PPID == the group id). kill_others terminates, then",
+      "# kills, every member of that group except timeout and the calling shell:",
+      "# on overflow so the producer stops at once, and again when we leave so",
+      "# nothing - borg, ssh, a wedged head - survives us.",
+      "rest=$(</proc/$$/stat); rest=${rest##*) }; set -- $rest; PGID=$3",
+      "group_others() {   # -> OTHERS; pure bash, no fork, so nothing transient is listed",
+      "  local f pid rest",
+      "  OTHERS=",
+      "  for f in /proc/[0-9]*/stat; do",
+      "    { read -r rest < \"$f\"; } 2>/dev/null || continue",
+      "    pid=${f#/proc/}; pid=${pid%/stat}",
+      "    rest=${rest##*) }        # \"state ppid pgrp ...\" after the comm field",
+      "    set -- $rest",
+      "    [ \"$3\" = \"$PGID\" ] || continue",
+      "    [ \"$1\" = Z ] && continue",
+      "    [ \"$pid\" != \"$$\" ] && [ \"$pid\" != \"$PPID\" ] && [ \"$pid\" != \"$BASHPID\" ] && OTHERS=\"$OTHERS $pid\"",
+      "  done",
+      "}",
+      "kill_others() {",
+      "  local tries",
+      "  for tries in 1 2 3 4 5 6; do",
+      "    group_others",
+      "    [ -z \"$OTHERS\" ] && return 0",
+      "    if [ \"$tries\" = 1 ]; then /usr/bin/kill -TERM $OTHERS 2>/dev/null",
+      "    elif [ \"$tries\" = 6 ]; then /usr/bin/kill -KILL $OTHERS 2>/dev/null",
+      "    fi",
+      "    /usr/bin/sleep 0.5",
+      "  done",
+      "}",
+      "cleanup() { trap \"\" TERM INT HUP PIPE; kill_others; }",
+      "trap cleanup EXIT",
+      "",
+      "# Fail closed (223) unless borgmatic is a trusted executable: absolute path,",
+      "# regular file, executable, not writable by group/others, owned by root or",
+      "# by us (symlinks resolved, so a pipx install in ~/.local/bin qualifies).",
+      "reject() { echo \"borgmatic executable rejected: $BM ($1)\" >&2; exit 223; }",
+      "case \"$BM\" in /*) ;; *) reject \"not an absolute path\";; esac",
+      "[ -f \"$BM\" ] || reject \"not a regular file\"",
+      "[ -x \"$BM\" ] || reject \"not executable\"",
+      "read -r mode owner < <(/usr/bin/stat -L -c \"%a %u\" -- \"$BM\") || reject \"stat failed\"",
+      "[ $(( 8#$mode & 8#022 )) -eq 0 ] || reject \"writable by group or others, mode $mode\"",
+      "[ \"$owner\" = 0 ] || [ \"$owner\" = \"$UID\" ] || reject \"owned by uid $owner\"",
+      "",
+      "# Passing any -c disables borgmatic's default config search, so the defaults",
+      "# that exist are re-listed explicitly before monitor.d is appended.",
+      "cfgs=()",
+      "for p in /etc/borgmatic/config.yaml /etc/borgmatic.d \"${XDG_CONFIG_HOME:-$HOME/.config}/borgmatic/config.yaml\" \"${XDG_CONFIG_HOME:-$HOME/.config}/borgmatic.d\" \"$MON\"; do",
+      "  [ -e \"$p\" ] && cfgs+=(-c \"$p\")",
+      "done",
+      "",
+      "# Both streams are capped before they reach the shell. stderr is cut and the",
+      "# rest drained; stdout probes one extra byte to tell \"hit the cap\" from",
+      "# \"exactly the cap\" and exits 222 on overflow after stopping the producer.",
+      "{ \"$BM\" \"${cfgs[@]}\" repo-list --json 2>&1 >&3 \\",
+      "    | { /usr/bin/head -c \"$ERRCAP\" >&2; /usr/bin/cat >/dev/null; }",
+      "  exit \"${PIPESTATUS[0]}\"",
+      "} 3>&1 | { /usr/bin/head -c \"$OUTCAP\"; [ \"$(/usr/bin/head -c 1 | /usr/bin/wc -c)\" -eq 0 ] || { kill_others; exit 222; }; }",
+      "rcs=(\"${PIPESTATUS[@]}\")",
+      "[ \"${rcs[1]}\" -eq 222 ] && exit 222",
+      "exit \"${rcs[0]}\""
+  ].join("\n")
+  // --- wrapper script end
 
   function applyResult(exitCode, stdoutText, stderrText) {
     lastAttemptMs = Date.now()
@@ -282,6 +366,7 @@ Item {
       return "borgmatic output exceeded " + Math.round(stdoutCapBytes / 1048576) + " MiB, check aborted"
     if (exitCode === 124 || exitCode === 137)
       return "check timed out after " + Math.round(checkTimeoutSec / 60) + " min"
+    // 223 (borgmatic executable rejected) explains itself on stderr.
     return lastStderrLine(stderrText, exitCode)
   }
 
