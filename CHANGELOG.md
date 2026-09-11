@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.1] - 2026-09-11
+
+### Fixed
+- The borgmatic check is now bounded: 5 min deadline that kills the whole borgmatic/borg/ssh process group, and producer-side output caps (8 MiB stdout, 64 KiB stderr) before anything reaches the shell. Timeouts and overflows are reported as explicit errors while the last good data stays on screen.
+- The failure banner shows the real cause (e.g. "Connection closed by remote host") instead of borgmatic's help footer or generic wrapper lines.
+
 ## [0.1.0] - 2026-09-06
 
 ### Added
