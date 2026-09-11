@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0] - 2026-09-11
+
+### Added
+- A repository borgmatic cannot list (wrong passphrase, missing repository, host down) now gets its own highlighted row with borg's error message, while the other repositories keep refreshing. The hero reads "N stale · M unchecked" and the banner "M of N repositories could not be checked".
+
+### Changed
+- The whole-check failure banner is reserved for runs that produce no usable data; its message now strips borgmatic's label prefixes and generic wrapper lines so borg's own error is shown.
+
 ## [0.1.1] - 2026-09-11
 
 ### Fixed
