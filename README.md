@@ -10,7 +10,10 @@ on a remote server.
   repository is older than the stale threshold (default 48 h).
 - **Popup panel** listing every configured repository with its last backup
   date and relative age; stale repositories are highlighted.
-- **Failure banner** when the check itself can't reach the server: the last
+- **Per-repository errors**: a repository borgmatic can't list (wrong
+  passphrase, missing repo, host down) gets its own highlighted row with
+  borg's message, while the others still refresh normally.
+- **Failure banner** when the check itself produces nothing usable: the last
   cached data stays visible, with when it was fetched.
 
 ## How it works

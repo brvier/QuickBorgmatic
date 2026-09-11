@@ -74,6 +74,15 @@ Item {
     return count
   }
   readonly property bool anyStale: staleCount > 0
+  // Repositories borgmatic could not list in the last check (wrong
+  // passphrase, missing repo, unreachable host...). They are rows with an
+  // `error` field and no archives, so they also count as stale.
+  readonly property int failedRepoCount: {
+    var count = 0
+    for (var i = 0; i < repos.length; i++)
+      if (repos[i] && repos[i].error) count++
+    return count
+  }
   readonly property bool neverChecked: lastCheckedMs === 0 && repos.length === 0
 
   function repoIsStale(repo) {
@@ -170,8 +179,12 @@ Item {
     lastAttemptMs = Date.now()
     nowMs = lastAttemptMs
 
+    // borgmatic keeps listing the other repositories when one fails and
+    // still prints their JSON, so a non-zero exit is parsed too: one broken
+    // repository must not hide the state of every other one. Only a
+    // truncated stream (222) is never parsed.
     var parsed = null
-    if (exitCode === 0) {
+    if (exitCode !== 222) {
       try { parsed = JSON.parse(String(stdoutText || "")) } catch (e) { parsed = null }
     }
 
@@ -188,18 +201,36 @@ Item {
         var key = String(repo.id || "") !== "" ? String(repo.id) : String(repo.location || "")
         if (seen[key]) continue
         seen[key] = true
+        seen[String(repo.location || "")] = true
         out.push({
           label: String(repo.label || "") !== "" ? String(repo.label) : String(repo.location || "repository"),
           location: String(repo.location || ""),
           id: String(repo.id || ""),
           lastBackupMs: latest ? parseBorgTime(latest.time || latest.start) : 0,
-          archiveCount: archives.length
+          archiveCount: archives.length,
+          error: ""
+        })
+      }
+      var failed = exitCode === 0 ? [] : failedRepos(stderrText)
+      for (var f = 0; f < failed.length; f++) {
+        if (seen[failed[f].location]) continue   // listed fine under another config
+        seen[failed[f].location] = true
+        out.push({
+          label: failed[f].label !== "" ? failed[f].label : failed[f].location,
+          location: failed[f].location,
+          id: "",
+          lastBackupMs: 0,
+          archiveCount: 0,
+          error: failed[f].error
         })
       }
       repos = out
       lastCheckedMs = lastAttemptMs
-      checkFailed = false
-      errorText = ""
+      // Every failure is attributed to a row: the rows tell the story.
+      // Otherwise the exit was non-zero for a reason we could not pin on a
+      // repository, so say so while still showing the fresh data.
+      checkFailed = exitCode !== 0 && failed.length === 0
+      errorText = checkFailed ? checkErrorText(exitCode, stderrText) : ""
     } else {
       // Keep the cached repos on failure - stale data beats no data - and
       // surface why. stderr is the only borgmatic text ever shown.
@@ -207,6 +238,43 @@ Item {
       errorText = checkErrorText(exitCode, stderrText)
     }
     persist()
+  }
+
+  // borgmatic reports each repository it could not list as
+  //   "<label>: Command 'borg list ... <repo-url>' returned non-zero exit status N."
+  // with the actual borg message on the nearest preceding line. Returns
+  // [{label, location, error}], one per repository.
+  readonly property var commandFailedRe: /^(?:([^:'\s][^:']*): )?Command '(.*)' returned non-zero exit status (\d+)\.?$/
+  readonly property var labelPrefixRe: /^[^:'\s][^:']*: /
+
+  function failedRepos(stderrText) {
+    var lines = String(stderrText || "").split("\n")
+    var byLocation = {}
+    var order = []
+    for (var i = 0; i < lines.length; i++) {
+      var m = commandFailedRe.exec(lines[i].trim())
+      if (!m) continue
+      var words = m[2].trim().split(/\s+/)
+      var location = words[words.length - 1]
+      if (!location) continue
+      var message = ""
+      for (var j = i - 1; j >= 0 && j >= i - 6; j--) {
+        var prev = lines[j].trim().replace(labelPrefixRe, "")
+        if (prev !== "" && !isNoiseLine(prev) && !commandFailedRe.test(prev)) { message = prev; break }
+      }
+      if (message === "") message = "borg exited with code " + m[3]
+      var label = m[1] ? m[1] : ""
+      var existing = byLocation[location]
+      if (!existing) {
+        byLocation[location] = { label: label, location: location, error: message }
+        order.push(location)
+      } else if (existing.label === "" && label !== "") {
+        existing.label = label   // the summary repeats the line without its label
+      }
+    }
+    var result = []
+    for (var k = 0; k < order.length; k++) result.push(byLocation[order[k]])
+    return result
   }
 
   function checkErrorText(exitCode, stderrText) {
@@ -233,8 +301,8 @@ Item {
   function lastStderrLine(stderrText, exitCode) {
     var lines = String(stderrText || "").split("\n")
     for (var i = lines.length - 1; i >= 0; i--) {
-      var line = lines[i].trim()
-      if (line !== "" && !isNoiseLine(line)) return line
+      var line = lines[i].trim().replace(labelPrefixRe, "")
+      if (line !== "" && !isNoiseLine(line) && !commandFailedRe.test(line)) return line
     }
     return "borgmatic exited with code " + exitCode
   }

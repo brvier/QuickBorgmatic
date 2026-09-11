@@ -33,6 +33,7 @@ Panel {
 
   readonly property var repoModel: store ? store.repos : []
   readonly property int staleCount: store ? store.staleCount : 0
+  readonly property int failedCount: store ? store.failedRepoCount : 0
 
   function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
 
@@ -50,8 +51,10 @@ Panel {
     if (!store) return ""
     if (store.checking) return "Checking…"
     if (store.neverChecked) return "No data yet"
-    if (staleCount > 0) return staleCount + " stale"
-    return "All fresh"
+    var parts = []
+    if (staleCount - failedCount > 0) parts.push((staleCount - failedCount) + " stale")
+    if (failedCount > 0) parts.push(failedCount + " unchecked")
+    return parts.length > 0 ? parts.join(" · ") : "All fresh"
   }
 
   KeyboardPanel {
@@ -114,8 +117,10 @@ Panel {
           }
 
           // ---------- Check failure ----------
+          // Whole check failed (no fresh data) or some repositories could
+          // not be listed (their rows carry the borg message).
           BorderSurface {
-            visible: !!root.store && root.store.checkFailed
+            visible: !!root.store && (root.store.checkFailed || root.failedCount > 0)
             width: parent.width
             implicitHeight: failureColumn.implicitHeight + Style.spacing.xl * 2
             color: root.alpha(root.urgent, 0.10)
@@ -134,11 +139,14 @@ Panel {
               Text {
                 textFormat: Text.PlainText
                 width: parent.width
-                text: root.store
-                  ? (root.store.lastCheckedMs > 0
-                    ? "Last check failed · showing data from " + root.store.agoText(root.store.lastCheckedMs)
-                    : "Backup check failed")
-                  : ""
+                text: {
+                  if (!root.store) return ""
+                  if (!root.store.checkFailed)
+                    return root.failedCount + " of " + root.repoModel.length + " repositories could not be checked"
+                  if (root.store.lastCheckedMs > 0)
+                    return "Last check failed · showing data from " + root.store.agoText(root.store.lastCheckedMs)
+                  return "Backup check failed"
+                }
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -274,6 +282,7 @@ Panel {
 
     readonly property bool stale: root.store ? root.store.repoIsStale(repo) : false
     readonly property double lastMs: repo ? Number(repo.lastBackupMs || 0) : 0
+    readonly property string error: repo ? String(repo.error || "") : ""
 
     implicitHeight: Math.max(leftColumn.implicitHeight, rightColumn.implicitHeight)
 
@@ -328,20 +337,25 @@ Panel {
       Text {
         textFormat: Text.PlainText
         anchors.right: parent.right
-        text: root.store ? root.store.agoText(row.lastMs) : ""
+        text: row.error !== "" ? "check failed" : (root.store ? root.store.agoText(row.lastMs) : "")
         color: row.stale ? root.urgent : root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         font.bold: true
       }
 
+      // Absolute date, or the borg error for a repository that could not
+      // be listed (bounded so a long message never squeezes the label out).
       Text {
         textFormat: Text.PlainText
         anchors.right: parent.right
-        text: root.store ? root.store.formatAbsolute(row.lastMs) : ""
+        width: Math.min(implicitWidth, row.width * 0.55)
+        text: row.error !== "" ? row.error : (root.store ? root.store.formatAbsolute(row.lastMs) : "")
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
+        horizontalAlignment: Text.AlignRight
       }
     }
   }
