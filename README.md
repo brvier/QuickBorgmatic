@@ -22,6 +22,12 @@ instantly after a shell restart, and re-derives staleness from the cached
 timestamps every minute. The plugin never reads the borgmatic config file;
 its only interface is the borgmatic subprocess.
 
+That subprocess is bounded: it runs under `timeout` (5 min, then the whole
+borgmatic/borg/ssh process group is killed) and both its output streams are
+capped before they reach the shell (8 MiB stdout, 64 KiB stderr). A stalled
+SSH peer shows up as "check timed out" and an oversized listing as "output
+exceeded", in both cases keeping the last good data on screen.
+
 ## Requirements
 
 - Omarchy shell (Quattro) with plugin support.

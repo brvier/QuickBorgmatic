@@ -35,6 +35,14 @@ Item {
   readonly property double staleMs: Math.max(1, staleHours) * 3600 * 1000
   readonly property double refreshMs: Math.max(1, refreshHours) * 3600 * 1000
 
+  // Hard limits on the check. The subprocess talks to remote hosts over
+  // SSH, so a stalled peer must not keep it alive forever and a hostile one
+  // must not feed the shell unbounded output. The wrapper script enforces
+  // all three before anything reaches this process.
+  readonly property int checkTimeoutSec: 300
+  readonly property int stdoutCapBytes: 8 * 1024 * 1024
+  readonly property int stderrCapBytes: 64 * 1024
+
   readonly property string home: Quickshell.env("HOME") || ""
   readonly property string stateDir: (Quickshell.env("XDG_STATE_HOME") || home + "/.local/state") + "/quickborgmatic"
   readonly property string cachePath: stateDir + "/status.json"
@@ -113,13 +121,28 @@ Item {
     // defaults that exist are re-listed explicitly before monitor.d is
     // appended. An empty monitor.d is fine (verified: borgmatic accepts an
     // empty config directory).
+    //
+    // $2 deadline (s), $3 stdout cap (bytes), $4 stderr cap (bytes).
+    // `timeout` puts borgmatic and its borg/ssh children in one process
+    // group and TERMs then KILLs the whole group at the deadline (exit 124).
+    // Both streams pass through `head -c` so this process never receives
+    // more than the caps: stderr is cut and the rest drained, stdout probes
+    // one extra byte to tell "hit the cap" from "exactly the cap" and exits
+    // 222 on overflow, which closes the pipe and stops the producer.
     command: ["bash", "-c", [
       'cfgs=()',
       'for p in /etc/borgmatic/config.yaml /etc/borgmatic.d "${XDG_CONFIG_HOME:-$HOME/.config}/borgmatic/config.yaml" "${XDG_CONFIG_HOME:-$HOME/.config}/borgmatic.d" "$1"; do',
       '  [ -e "$p" ] && cfgs+=(-c "$p")',
       'done',
-      'exec borgmatic "${cfgs[@]}" repo-list --json'
-    ].join("\n"), "--", root.monitorDir]
+      '{ timeout -k 10 "$2" borgmatic "${cfgs[@]}" repo-list --json 2>&1 >&3 \\',
+      '    | { head -c "$4" >&2; cat >/dev/null; }',
+      '  exit "${PIPESTATUS[0]}"',
+      '} 3>&1 | { head -c "$3"; [ "$(head -c 1 | wc -c)" -eq 0 ] || exit 222; }',
+      'rcs=("${PIPESTATUS[@]}")',
+      '[ "${rcs[1]}" -eq 222 ] && exit 222',
+      'exit "${rcs[0]}"'
+    ].join("\n"), "--", root.monitorDir, String(root.checkTimeoutSec),
+        String(root.stdoutCapBytes), String(root.stderrCapBytes)]
 
     // waitForEnd holds the exited signal until both streams have drained,
     // so the collectors' text is complete inside onExited.
@@ -128,6 +151,18 @@ Item {
 
     onExited: function(exitCode) {
       root.applyResult(exitCode, outCollector.text, errCollector.text)
+    }
+  }
+
+  // Last-resort reaper in case `timeout` itself never returns: SIGKILL the
+  // wrapper well after its own deadline. Normally never fires.
+  Timer {
+    interval: (root.checkTimeoutSec + 30) * 1000
+    running: proc.running
+    repeat: false
+    onTriggered: {
+      console.warn("quickborgmatic: check exceeded its deadline, killing it")
+      proc.signal(9)
     }
   }
 
@@ -169,16 +204,37 @@ Item {
       // Keep the cached repos on failure - stale data beats no data - and
       // surface why. stderr is the only borgmatic text ever shown.
       checkFailed = true
-      errorText = lastStderrLine(stderrText, exitCode)
+      errorText = checkErrorText(exitCode, stderrText)
     }
     persist()
+  }
+
+  function checkErrorText(exitCode, stderrText) {
+    if (exitCode === 222)
+      return "borgmatic output exceeded " + Math.round(stdoutCapBytes / 1048576) + " MiB, check aborted"
+    if (exitCode === 124 || exitCode === 137)
+      return "check timed out after " + Math.round(checkTimeoutSec / 60) + " min"
+    return lastStderrLine(stderrText, exitCode)
+  }
+
+  // borg's remote chatter, borgmatic's help footer and its generic
+  // "something failed" wrappers never say what went wrong; skipping them
+  // surfaces the actual cause (e.g. "Connection closed by remote host").
+  readonly property var noisePrefixes: [
+    "Remote:", "Need some help?", "Error running configuration",
+    "An error occurred", "Error running actions for repository"
+  ]
+  function isNoiseLine(line) {
+    for (var i = 0; i < noisePrefixes.length; i++)
+      if (line.indexOf(noisePrefixes[i]) === 0) return true
+    return false
   }
 
   function lastStderrLine(stderrText, exitCode) {
     var lines = String(stderrText || "").split("\n")
     for (var i = lines.length - 1; i >= 0; i--) {
       var line = lines[i].trim()
-      if (line !== "" && line.indexOf("Remote:") !== 0) return line
+      if (line !== "" && !isNoiseLine(line)) return line
     }
     return "borgmatic exited with code " + exitCode
   }
