@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "fr.rvier.quickborgmatic",
   "name": "QuickBorgmatic",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": "Benoît HERVIER",
   "license": "MIT",
   "description": "Borgmatic backup freshness monitor: bar icon that warns when the newest backup is older than a threshold, with a per-repository popup",
